@@ -1,6 +1,8 @@
 # DSP Yahoo Geo Test — Project Context
-**Ticket:** MDF-1629  
-**Last updated:** 2026-05-14
+**Ticket:** MDF-1629
+**Last updated:** 2026-05-26 (post-audit refactor)
+
+> ⚠️ **Major audit completed 2026-05-26.** The original `DMA_NAMES` dict in `balance_design2.py` had 115/211 codes mislabeled. See **`DMA_AUDIT_AND_REDESIGN.md`** for full findings. All output below reflects the corrected MMT design.
 
 ---
 
@@ -9,7 +11,7 @@ Run a **3-cell DMA geo-level incrementality test** to measure whether Yahoo DSP 
 
 ---
 
-## Test Design
+## Test Design (Design 2 — MMT)
 
 ### Cells
 | # | Label | Purpose |
@@ -18,9 +20,22 @@ Run a **3-cell DMA geo-level incrementality test** to measure whether Yahoo DSP 
 | 2 | DSP (Scope3) Test | DMAs exposed to Scope3 DSP ads |
 | 3 | Control Holdout | No DSP ads (pure holdout) |
 
-### Two parallel designs
-1. **Full Geo Test** — all eligible DMAs balanced across 3 cells on enrollment volume
-2. **Matched Market Test (MMT)** — 10 matched triplets (1 DMA per cell per triplet) selected by time-series correlation + enrollment similarity
+### Algorithm: Matched Market Test (MMT)
+- 10 matched triplets (1 DMA per cell per triplet)
+- Triplets formed by stratifying eligible pool by enrollment+spend composite, then within each stratum picking the 3 DMAs maximising `avg_pairwise_correlation − 0.5×CV_enroll − 0.5×CV_spend` on weekly enrollments
+- Cells assigned within each triplet to balance overall totals via brute-force permutation
+- Cell-level z-test on weekly relative differences for power (matches paper methodology)
+
+### Power Design (from the design paper, Yahoo + Scope3 doc)
+| Parameter | Value |
+|-----------|-------|
+| Flight duration | 3 weeks |
+| Budget per partner | $300,000 |
+| iCPE assumption | $400 |
+| Expected incremental enrollments | 750 per partner |
+| Expected lift | ~5.6% |
+| Statistical power | **80%** |
+| α (significance) | 0.05 two-sided |
 
 ---
 
@@ -28,18 +43,78 @@ Run a **3-cell DMA geo-level incrementality test** to measure whether Yahoo DSP 
 
 | File | Description |
 |---|---|
-| `May 2025- 2026 Data by DMA.csv` | Raw daily data: `geo, assignment, date, total users, cta taps, enrollments, dd_30` — 88K rows, ~424 days |
-| `dma_paid_spend.csv` | Paid marketing spend by DMA + date pulled from Snowflake (`edw_db` via `SNOWFLAKE_PROD_ANALYST_OKTA` role, `ANALYTICS_WH`) |
-| `fetch_spend.py` | Snowflake pull script — queries `fact_marketing_user_spend` joined to `member_details` + zipcode-to-DMA mapping |
-| `balance_dma_groups.py` | Main script: loads enrollment + spend data, applies exclusions, selects top 27 DMAs, runs dual-metric LPT + local search balancing, power analysis, MMT selection, generates charts |
-| `dma_group_assignments.csv` | Output: full geo test DMA → cell assignments (includes `total_paid_spend` column) |
-| `mmt_group_assignments.csv` | Output: 10 matched triplets × 3 cells |
-| `dma_group_balance.png` | Chart: weekly enrollment trend + weekly paid spend trend by cell (parallel trends check on both metrics) |
-| `dma_power_analysis.png` | Chart: weeks needed & budget vs. assumed lift |
-| `mmt_balance_power.png` | Chart: MMT enrollment trend, profile, MDE curve |
-| `Yahoo_DSP_Geo_Test_Design.docx` | Design document |
-| `generate_docx.py` / `generate_doc.py` | Scripts for generating the design doc |
-| `creator_pulse_test.py` | Empty — future use |
+| `balance_design2.py` | **Main script** — canonical DMA_NAMES, fixed exclusions, MMT algorithm, parallel-trends chart |
+| `May 2025- 2026 Data by DMA.csv` | Raw daily data (88K rows, 60 weeks, 210 DMAs) — uses correct Nielsen codes |
+| `dma_paid_spend.csv` | Paid spend by DMA + date from Snowflake — uses correct Nielsen codes |
+| `fetch_spend.py` | Snowflake pull script (no changes — codes were always correct) |
+| `design2_dma_group_assignments.csv` | **Output** — 30-DMA MMT cell assignments with correct Nielsen names |
+| `design2_parallel_trends.png` | **Output** — 4-panel validation chart |
+| `DMA_AUDIT_AND_REDESIGN.md` | **Full audit + redesign rationale** |
+| `Yahoo_DSP_Geo_Test_Design.docx` | Design document (to be regenerated) |
+| `generate_doc.py` / `generate_docx.py` | Doc generators |
+
+---
+
+## Exclusions (applied in `balance_design2.py`)
+
+### (A) Active geo tests (20 DMAs) — Samsung + tvScientific
+Jackson MS (718), Shreveport LA (612), Cincinnati OH (515), Little Rock AR (693), Norfolk VA (544), Greensboro NC (518), El Paso TX (765), Harlingen TX (636), Harrisburg PA (566), West Palm Beach FL (548), Macon GA (503), Joplin MO/Pittsburg KS (522), Charleston WV (564), Dayton OH (542), Fresno CA (866), San Diego CA (825), Greenville SC/NC (567), Minneapolis MN (514), Chattanooga TN (575), Baton Rouge LA (716)
+
+### (B) Large markets (30 DMAs)
+NY (501), LA (803), Dallas (623), Houston (618), Memphis (640), Indianapolis (527), Kansas City (616), Detroit (505), Birmingham (630), Baltimore (512), Charlotte (517), Atlanta (524), Louisville (529), Columbus OH (535), Philadelphia (504), San Francisco (807), Phoenix (753), Nashville (659), Chicago (602), New Orleans (622), Pittsburgh (508), Oklahoma City (650), St. Louis (609), Las Vegas (839), San Antonio (641), Jacksonville (561), Milwaukee (617), Washington DC (511), Salt Lake City (770), Seattle-Tacoma (819)
+
+### (C) Design 1 DMAs (58 codes — defensive double-coding)
+- 30 codes from Design 1's original output (`DESIGN1_ORIGINAL_CODES`)
+- 28 canonical Nielsen codes for the intended-market names from Design 1 (`DESIGN1_INTENDED_CODES`)
+- Union = 58 unique codes; defensive double-coding protects against the same name↔code drift that caused this audit
+
+### (D) Offshore — 4 DMAs
+Anchorage (743), Honolulu (744), Fairbanks (745), Juneau (747)
+
+### (E) Bottom-50 by enrollment — automatically excluded
+Markets too small to detect meaningful lift.
+
+**Net eligible pool: 73 DMAs** (after all exclusions)
+
+---
+
+## Final MMT Assignments (10 Triplets × 3 Cells = 30 DMAs)
+
+| Triplet | Yahoo Test (ads ON) | DSP (Scope3) Test (ads ON) | Control Holdout (ads OFF) |
+|:-:|:-:|:-:|:-:|
+| 1 | Spokane, WA | Albany-Schenectady-Troy, NY | Toledo, OH |
+| 2 | Montgomery-Selma, AL | Tri-Cities, TN/VA | Tallahassee, FL-Thomasville, GA |
+| 3 | Lafayette, LA | Tyler-Longview, TX | Evansville, IN |
+| 4 | Rochester, NY | Monroe, LA-El Dorado, AR | Ft. Wayne, IN |
+| 5 | Beaumont-Port Arthur, TX | Albany, GA | Odessa-Midland, TX |
+| 6 | Yakima-Pasco-Richland-Kennewick, WA | Amarillo, TX | Wichita Falls, TX-Lawton, OK |
+| 7 | Biloxi-Gulfport, MS | Lincoln-Hastings-Kearney, NE | Peoria-Bloomington, IL |
+| 8 | Burlington, VT-Plattsburgh, NY | Springfield-Holyoke, MA | Fargo-Valley City, ND |
+| 9 | Terre Haute, IN | Rockford, IL | Abilene-Sweetwater, TX |
+| 10 | Alexandria, LA | Jonesboro, AR | Salisbury, MD |
+
+### Balance
+| Cell | DMAs | Enrollments | Spend |
+|------|-----|------------|-------|
+| 1 — Yahoo Test | 10 | 198,468 | $1,627.5M |
+| 2 — DSP (Scope3) | 10 | 200,102 | $1,613.1M |
+| 3 — Control | 10 | 199,660 | $1,624.2M |
+
+- **Enrollment CV: 0.346%** ✓ (target <2%)
+- **Spend CV: 0.379%** ✓ (target <2%)
+- **Enroll imbalance: 0.819%** ✓ (target <5%)
+- **Spend imbalance: 0.885%** ✓ (target <5%)
+
+### Parallel Trends Validation (pre-period: Feb 2025 – Apr 2026, 60 weeks)
+| Pair | Weekly enrollment correlation |
+|------|------------------------------|
+| Yahoo Test vs Control | **r = +0.967** ✓ |
+| DSP Test vs Control | **r = +0.969** ✓ |
+| Yahoo Test vs DSP Test | **r = +0.968** ✓ |
+
+### Power
+- **Yahoo vs Control**: σ_eff = 2.74%, achieved power = **99.8%** ✓ (target 80%)
+- **DSP vs Control**: σ_eff = 2.35%, achieved power = **100%** ✓ (target 80%)
 
 ---
 
@@ -47,90 +122,21 @@ Run a **3-cell DMA geo-level incrementality test** to measure whether Yahoo DSP 
 ```
 index, geo (DMA code), assignment (prior cell), date, total users, cta taps, enrollments, dd_30
 ```
-- `dd_30`: likely 30-day direct deposit metric
+- `dd_30`: 30-day direct deposit metric
 - `cta taps`: call-to-action taps (ad engagement proxy)
 - `assignment`: prior test assignment (Cell A YouTube / Cell B Meta / Cell C Control / Excluded)
 
 ---
-
-## Exclusions (applied in `balance_dma_groups.py`)
-
-### (A) In another active geo test (~20 DMAs)
-Jackson MS (718), Shreveport LA (612), Cincinnati OH (515), Little Rock AR (693), Norfolk VA (544), Greensboro NC (518), El Paso TX (765), Harlingen TX (636), Harrisburg PA (566), West Palm Beach FL (548), Macon GA (503), Columbus GA (522), Charleston WV (564), Dayton OH (542), Fresno CA (866), San Diego CA (825), Greenville SC/NC (567), Minneapolis MN (514), Chattanooga TN (575), Baton Rouge LA (716)
-
-### (B) Large markets excluded by test design (~26 DMAs)
-New York (501), Los Angeles (803), Houston (618), Memphis (640), Indianapolis (527), Kansas City (616), Detroit (505), Birmingham (630), Baltimore (512), Charlotte (517), Atlanta (524), Louisville (529), Columbus OH (535), Philadelphia (504), San Francisco (807), Phoenix (753), Nashville (659), Chicago (602), New Orleans (622), Pittsburgh (508), Oklahoma City (650), St. Louis (609), Las Vegas (839), San Antonio (641), Jacksonville (561), Milwaukee (617)
-
----
-
-## Balancing Algorithm
-1. **Dual-metric composite**: min-max normalise `total_enrollments` and `total_paid_spend`, combine 50/50 into a `composite` score per DMA
-2. **DMA selection**: take top `N_PER_CELL × N_CELLS` DMAs by composite score (currently 9 × 3 = 27 DMAs, i.e. 8–10 per cell)
-3. **LPT Greedy**: sort selected DMAs descending by composite, assign each to the lowest-sum group
-4. **Local Search**: 50k iterations of random single-DMA moves and pair swaps to minimise max−min imbalance
-5. **Target**: CV < 2%, max-min imbalance < 5% on both enrollment and spend
-6. **Config knobs**: `N_PER_CELL` (default 9), `ENROLL_WEIGHT` / `SPEND_WEIGHT` (default 0.5 each)
-
----
-
-## MMT Design
-- Drop bottom-50 DMAs by enrollment from pool
-- Sort remaining DMAs into 10 strata by size
-- Within each stratum, pick the triplet maximising: `avg_pairwise_corr − 1.5 × enrollment_CV`
-- Assign cells greedily to balance totals across Yahoo / DSP / Control
-- Uses paired t-test for power (df = n_triplets − 1 = 9)
-
----
-
-## Power Analysis Parameters
-- α = 0.05, two-sided; power = 80%
-- iCPE (incremental cost per enrollment) = $400
-- Budget cap = $300,000 per partner
-- Autocorrelation correction: Newey-West lag-1 variance inflation
-- Pre-period noise estimated from historical weekly (treatment − control) / control relative differences
-
----
-
-## Current Cell Assignments (Full Geo Test)
-
-### Cell 1 — Yahoo Test (top DMAs by enrollment)
-Dallas-Ft. Worth TX (267K), Cleveland-Akron OH (104K), Riverside-San Bernardino CA (99K), Portland OR (67K), La Crosse-Eau Claire WI (59K), Flint-Saginaw MI (56K), Richmond-Petersburg VA (47K), Waco-Temple-Bryan TX (43K), Kansas City MO (37K), Hattiesburg-Laurel MS (36K), Denver CO (35K), Albany-Schenectady-Troy NY (31K), Hartford-New Haven CT (31K), Des Moines-Ames IA (30K)...
-
-### Cell 2 — DSP (Scope3) Test (top DMAs by enrollment)
-Tampa-St. Pete FL (152K), Miami FL (122K), Sacramento CA (101K), Seattle-Tacoma WA (92K), Johnstown-Altoona PA (79K), Columbia SC (57K), Tucson-Sierra Vista AZ (49K), Phoenix AZ (48K), Wichita-Hutchinson KS (40K), Savannah GA (39K), Salt Lake City UT (36K), Albuquerque-Santa Fe NM (35K), Salt Lake City UT (33K), Raleigh-Durham NC (31K)...
-
-### Cell 3 — Control Holdout (top DMAs by enrollment)
-Washington DC (142K), Orlando FL (142K), Boston MA (99K), Denver CO (88K), Seattle-Tacoma WA (66K), Mobile AL (64K), Grand Rapids MI (53K), Greenville-New Bern NC (45K), Cedar Rapids IA (44K), Lubbock TX (37K), Knoxville TN (36K), Roanoke-Lynchburg VA (34K), Flint-Saginaw-Bay City MI (33K), Richmond-Petersburg VA (31K)...
-
----
-
-## MMT Assignments (10 Triplets)
-| Triplet | Yahoo Test | DSP (Scope3) | Control |
-|---|---|---|---|
-| 1 | Tampa-St. Pete (152K) | Washington DC (142K) | Orlando (142K) |
-| 2 | Flint-Saginaw MI (56K) | Columbia SC (57K) | La Crosse-Eau Claire WI (59K) |
-| 3 | Wichita-Hutchinson KS (40K) | Greenville-New Bern NC (45K) | Waco-Temple-Bryan TX (43K) |
-| 4 | Lincoln-Hastings NE (30K) | Hartford-New Haven CT (31K) | Salt Lake City UT (33K) |
-| 5 | Tri-Cities TN/VA (26K) | Tyler-Longview TX (27K) | Spokane WA (26K) |
-| 6 | Tulsa OK (20K) | Biloxi-Gulfport MS (21K) | Ft. Wayne IN (20K) |
-| 7 | Laredo TX (17K) | Huntsville-Decatur AL (19K) | Amarillo TX (19K) |
-| 8 | Medford-Klamath Falls OR (17K) | Wichita Falls TX (17K) | Davenport IL/IA (17K) |
-| 9 | Chico-Redding CA (14K) | Huntington-Charleston WV (14K) | Fargo-Valley City ND (14K) |
-| 10 | Springfield-Holyoke MA (12K) | Palm Springs CA (11K) | Duluth MN (12K) |
-
----
-
-## Current Cell Assignments (8–10 DMAs per cell, 27 total)
-- **27 DMAs selected** from 164 eligible — top DMAs by composite score (50% enrollment + 50% paid spend)
-- **Enrollment CV: 1.20%** ✓ | **Spend CV: 1.26%** ✓ (both well under 2% target)
-- Balance chart (`dma_group_balance.png`) shows weekly enrollment + spend line graphs per cell
 
 ## Snowflake Connection
 - **Role**: `SNOWFLAKE_PROD_ANALYST_OKTA`
 - **Warehouse**: `ANALYTICS_WH`
 - **Spend query**: joins `edw_db.core.member_details` + `edw_db.marketing.fact_marketing_user_spend` + `FIVETRAN.GSHEETS.ZIPCODE_TO_DMA` where `traffic_source = 'paid'`
 
+---
+
 ## Open Questions / Next Steps
-- [ ] Decide on test launch date and duration
-- [ ] Review DMA assignments for geographic diversity / business sense
-- [ ] Tune `N_PER_CELL` (currently 9) or `ENROLL_WEIGHT`/`SPEND_WEIGHT` if needed
+- [ ] Regenerate `Yahoo_DSP_Geo_Test_Design.docx` from the new MMT outputs
+- [ ] Re-share the corrected paper with marketing (the original Google Doc has the same DMA mislabels)
+- [ ] Confirm test launch date
+- [ ] Verify active-test exclusions (Samsung, tvScientific) are still active in May 2026
