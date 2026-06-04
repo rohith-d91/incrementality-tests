@@ -14,9 +14,9 @@ fell into "unmapped" / unknown city IDs.
 import pandas as pd
 from pathlib import Path
 
-VIS_PATH = "/Users/rohith.devarasetty/Documents/Cursor/tvScientific Incrementality Test/Visitor data 0526.csv"
+VIS_PATH = "/Users/rohith.devarasetty/Documents/Cursor/tvScientific Incrementality Test/GA4 data till Jun 4, 2026.csv"
 GEO_PATH = "/tmp/tvsci/Gma_Geocid_US.csv"
-OUT_PATH = "/tmp/tvsci/Visitors_by_DMA_0526.csv"
+OUT_PATH = "/tmp/tvsci/Visitors_by_DMA_0604.csv"
 
 # ---- Load visitor file -----------------------------------------------------
 # 4-line "#" preamble + 1 blank line + header row (line 7) + "Grand total" row (line 8).
